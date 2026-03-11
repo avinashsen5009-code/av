@@ -1,135 +1,110 @@
 import streamlit as st
 import whisper
 import subprocess
+import os
+from datetime import timedelta
 
-st.set_page_config(page_title="Hindi Audio → Hinglish Sliding Captions")
+st.title("Hindi Audio → Hinglish Caption Video Generator")
 
-st.title("Hindi Audio → Hinglish Caption Generator")
+st.write("Upload audio, video and Hinglish caption text to generate animated captions.")
 
-audio = st.file_uploader("Upload Hindi Audio", type=["mp3","wav","m4a"])
-caption_text = st.text_area("Paste Hinglish Caption (sentences separated by .)")
+audio_file = st.file_uploader("Upload Hindi Audio", type=["mp3","wav"])
+video_file = st.file_uploader("Upload Background Video", type=["mp4"])
+text_input = st.text_area("Paste Hinglish Caption Text (line by line)")
 
-# Caption style controls
-font = st.selectbox(
-    "Font",
-    ["Arial","Impact","Poppins","Montserrat","Anton","Bebas Neue"]
+font_name = st.selectbox(
+"Select Font",
+["Arial","Impact","Montserrat","Poppins","Roboto"]
 )
 
-font_size = st.slider("Font Size",40,120,70)
+font_size = st.slider("Font Size",20,80,48)
 
-text_color = st.color_picker("Text Color","#FFFFFF")
-border_color = st.color_picker("Border Color","#000000")
+border_size = st.slider("Border Size",0,10,3)
 
-border_size = st.slider("Border Size",0,10,4)
-shadow_size = st.slider("Shadow Size",0,10,2)
+font_color = st.color_picker("Font Color","#FFFFFF")
 
-# convert HEX → ASS subtitle color
-def hex_to_ass(hex_color):
-    hex_color = hex_color.replace("#","")
-    r = hex_color[0:2]
-    g = hex_color[2:4]
-    b = hex_color[4:6]
-    return f"&H00{b}{g}{r}"
+if st.button("Generate Video"):
 
-primary = hex_to_ass(text_color)
-outline = hex_to_ass(border_color)
+    os.makedirs("temp",exist_ok=True)
 
-@st.cache_resource
-def load_model():
-    return whisper.load_model("tiny", device="cpu")
+    audio_path="temp/audio.mp3"
+    video_path="temp/video.mp4"
+    ass_path="temp/captions.ass"
+    output_path="temp/output.mp4"
 
-model = load_model()
+    with open(audio_path,"wb") as f:
+        f.write(audio_file.read())
 
+    with open(video_path,"wb") as f:
+        f.write(video_file.read())
 
-def convert_audio():
+    st.write("Loading Whisper model...")
+    model=whisper.load_model("base")
 
-    subprocess.run([
-        "ffmpeg",
-        "-y",
-        "-i","audio.wav",
-        "-ac","1",
-        "-ar","16000",
-        "clean.wav"
-    ])
+    st.write("Detecting speech timing...")
+    result=model.transcribe(audio_path)
 
+    segments=result["segments"]
 
-def time_format(t):
-    return f"0:00:{t:05.2f}"
+    lines=text_input.split("\n")
 
+    def format_time(seconds):
+        t=timedelta(seconds=seconds)
+        total=t.total_seconds()
+        h=int(total//3600)
+        m=int((total%3600)//60)
+        s=total%60
+        return f"{h}:{m:02}:{s:05.2f}"
 
-def create_ass(sentences,segments):
-
-    header=f"""
+    ass_header=f"""
 [Script Info]
 ScriptType: v4.00+
-PlayResX:1080
-PlayResY:1920
 
 [V4+ Styles]
-Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,BorderStyle,Outline,Shadow,Alignment,MarginV
-Style: Default,{font},{font_size},{primary},{outline},&H00000000,1,{border_size},{shadow_size},2,50
+Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,{font_name},{font_size},&H00FFFFFF,&H00000000,1,{border_size},0,2,10,10,40,1
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
 
-    lines=[]
+    events=""
 
-    for i,s in enumerate(sentences):
+    for i,seg in enumerate(segments):
 
-        if i>=len(segments):
+        if i>=len(lines):
             break
 
-        start=segments[i]["start"]
-        end=segments[i]["end"]
+        start=format_time(seg["start"])
+        end=format_time(seg["end"])
 
-        start=time_format(start)
-        end=time_format(end)
+        text=lines[i]
 
-        slide="\\move(-400,960,540,960,0,500)"
+        animation=r"{\move(-400,900,540,900,0,500)}"
 
-        text=f"{{{slide}}}{s.upper()}"
+        events+=f"Dialogue: 0,{start},{end},Default,,0,0,0,,{animation}{text}\n"
 
-        lines.append(
-            f"Dialogue:0,{start},{end},Default,,0,0,0,,{text}"
+    with open(ass_path,"w",encoding="utf8") as f:
+        f.write(ass_header+events)
+
+    st.write("Rendering video with FFmpeg...")
+
+    command=[
+        "ffmpeg",
+        "-y",
+        "-i",video_path,
+        "-vf",f"ass={ass_path}",
+        "-c:a","copy",
+        output_path
+    ]
+
+    subprocess.run(command)
+
+    st.success("Video Generated!")
+
+    with open(output_path,"rb") as f:
+        st.download_button(
+            "Download Video",
+            f,
+            file_name="caption_video.mp4"
         )
-
-    with open("captions.ass","w") as f:
-        f.write(header+"\n".join(lines))
-
-
-if st.button("Generate Captions"):
-
-    if audio and caption_text:
-
-        with open("audio.wav","wb") as f:
-            f.write(audio.read())
-
-        with st.spinner("Preparing audio..."):
-            convert_audio()
-
-        with st.spinner("Analyzing speech timing..."):
-
-            result=model.transcribe(
-                "clean.wav",
-                word_timestamps=True
-            )
-
-        segments=result["segments"]
-
-        sentences=[s.strip() for s in caption_text.split(".") if s.strip()!=""]
-
-        create_ass(sentences,segments)
-
-        st.success("Captions Generated!")
-
-        with open("captions.ass","rb") as f:
-
-            st.download_button(
-                "Download Subtitle File",
-                f,
-                file_name="captions.ass"
-            )
-
-    else:
-        st.warning("Upload audio and caption first")
