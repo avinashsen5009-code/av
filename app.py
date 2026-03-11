@@ -1,110 +1,63 @@
 import streamlit as st
 import whisper
-import subprocess
-import os
 from datetime import timedelta
+import tempfile
 
-st.title("Hindi Audio → Hinglish Caption Video Generator")
+st.title("Hindi Audio → Accurate SRT Generator")
 
-st.write("Upload audio, video and Hinglish caption text to generate animated captions.")
+st.write("Upload Hindi audio and generate subtitle file with timestamps.")
 
-audio_file = st.file_uploader("Upload Hindi Audio", type=["mp3","wav"])
-video_file = st.file_uploader("Upload Background Video", type=["mp4"])
-text_input = st.text_area("Paste Hinglish Caption Text (line by line)")
+audio_file = st.file_uploader("Upload Audio", type=["mp3","wav","m4a"])
 
-font_name = st.selectbox(
-"Select Font",
-["Arial","Impact","Montserrat","Poppins","Roboto"]
+model_size = st.selectbox(
+    "Accuracy vs Speed",
+    ["tiny","base","small"]
 )
 
-font_size = st.slider("Font Size",20,80,48)
+def format_timestamp(seconds):
+    td = timedelta(seconds=seconds)
+    total = td.total_seconds()
 
-border_size = st.slider("Border Size",0,10,3)
+    hours = int(total // 3600)
+    minutes = int((total % 3600) // 60)
+    seconds = int(total % 60)
+    milliseconds = int((total - int(total)) * 1000)
 
-font_color = st.color_picker("Font Color","#FFFFFF")
+    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
 
-if st.button("Generate Video"):
+if st.button("Generate SRT") and audio_file:
 
-    os.makedirs("temp",exist_ok=True)
+    st.info("Loading model...")
 
-    audio_path="temp/audio.mp3"
-    video_path="temp/video.mp4"
-    ass_path="temp/captions.ass"
-    output_path="temp/output.mp4"
+    model = whisper.load_model(model_size)
 
-    with open(audio_path,"wb") as f:
-        f.write(audio_file.read())
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(audio_file.read())
+        audio_path = tmp.name
 
-    with open(video_path,"wb") as f:
-        f.write(video_file.read())
+    st.info("Transcribing audio...")
 
-    st.write("Loading Whisper model...")
-    model=whisper.load_model("base")
+    result = model.transcribe(audio_path, language="hi")
 
-    st.write("Detecting speech timing...")
-    result=model.transcribe(audio_path)
+    segments = result["segments"]
 
-    segments=result["segments"]
+    srt_output = ""
 
-    lines=text_input.split("\n")
+    for i, seg in enumerate(segments):
 
-    def format_time(seconds):
-        t=timedelta(seconds=seconds)
-        total=t.total_seconds()
-        h=int(total//3600)
-        m=int((total%3600)//60)
-        s=total%60
-        return f"{h}:{m:02}:{s:05.2f}"
+        start = format_timestamp(seg["start"])
+        end = format_timestamp(seg["end"])
+        text = seg["text"].strip()
 
-    ass_header=f"""
-[Script Info]
-ScriptType: v4.00+
+        srt_output += f"{i+1}\n"
+        srt_output += f"{start} --> {end}\n"
+        srt_output += f"{text}\n\n"
 
-[V4+ Styles]
-Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Default,{font_name},{font_size},&H00FFFFFF,&H00000000,1,{border_size},0,2,10,10,40,1
+    st.success("SRT file generated!")
 
-[Events]
-Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-"""
-
-    events=""
-
-    for i,seg in enumerate(segments):
-
-        if i>=len(lines):
-            break
-
-        start=format_time(seg["start"])
-        end=format_time(seg["end"])
-
-        text=lines[i]
-
-        animation=r"{\move(-400,900,540,900,0,500)}"
-
-        events+=f"Dialogue: 0,{start},{end},Default,,0,0,0,,{animation}{text}\n"
-
-    with open(ass_path,"w",encoding="utf8") as f:
-        f.write(ass_header+events)
-
-    st.write("Rendering video with FFmpeg...")
-
-    command=[
-        "ffmpeg",
-        "-y",
-        "-i",video_path,
-        "-vf",f"ass={ass_path}",
-        "-c:a","copy",
-        output_path
-    ]
-
-    subprocess.run(command)
-
-    st.success("Video Generated!")
-
-    with open(output_path,"rb") as f:
-        st.download_button(
-            "Download Video",
-            f,
-            file_name="caption_video.mp4"
-        )
+    st.download_button(
+        "Download SRT",
+        srt_output,
+        file_name="captions.srt",
+        mime="text/plain"
+    )
